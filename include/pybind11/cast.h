@@ -2160,7 +2160,12 @@ public:
     static constexpr auto arg_names
         = ::pybind11::detail::concat(type_descr(make_caster<Args>::name)...);
 
-    bool load_args(function_call &call) { return load_impl_sequence(call, indices{}); }
+    /// `old_style_init_frame` is non-null only for an old-style constructor candidate, whose
+    /// `self` (positional argument 0) may reach not-yet-constructed storage. Every other call
+    /// passes nullptr and pays nothing for the per-argument bookkeeping.
+    bool load_args(function_call &call, loader_life_support *old_style_init_frame = nullptr) {
+        return load_impl_sequence(call, indices{}, old_style_init_frame);
+    }
 
     template <typename Return, typename Guard, typename Func>
     // NOLINTNEXTLINE(readability-const-return-type)
@@ -2177,21 +2182,35 @@ public:
     }
 
 private:
-    static bool load_impl_sequence(function_call &, index_sequence<>) { return true; }
+    static bool load_impl_sequence(function_call &, index_sequence<>, loader_life_support *) {
+        return true;
+    }
+
+    // Loads one positional argument, telling an old-style constructor frame (if any) which
+    // argument is being loaded: only argument 0 is the constructor's `self`.
+    template <size_t I>
+    bool load_one(loader_life_support *old_style_init_frame, function_call &call) {
+        if (old_style_init_frame != nullptr) {
+            old_style_init_frame->begin_argument_load(I);
+        }
+        return std::get<I>(argcasters).load(call.args[I], call.args_convert[I]);
+    }
 
     template <size_t... Is>
-    bool load_impl_sequence(function_call &call, index_sequence<Is...>) {
+    bool load_impl_sequence(function_call &call,
+                            index_sequence<Is...>,
+                            loader_life_support *old_style_init_frame) {
         PYBIND11_WARNING_PUSH
 #if !defined(__clang__) && defined(__GNUC__) && __GNUC__ >= 13
         // Work around a GCC -Warray-bounds false positive in argument_vector usage.
         PYBIND11_WARNING_DISABLE_GCC("-Warray-bounds")
 #endif
 #ifdef __cpp_fold_expressions
-        if ((... || !std::get<Is>(argcasters).load(call.args[Is], call.args_convert[Is]))) {
+        if ((... || !load_one<Is>(old_style_init_frame, call))) {
             return false;
         }
 #else
-        for (bool r : {std::get<Is>(argcasters).load(call.args[Is], call.args_convert[Is])...}) {
+        for (bool r : {load_one<Is>(old_style_init_frame, call)...}) {
             if (!r) {
                 return false;
             }

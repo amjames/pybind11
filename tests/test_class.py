@@ -336,6 +336,14 @@ def test_failed_old_style_init_does_not_leave_lazy_storage():
     assert obj.v_data() == 42
 
 
+def test_old_style_init_accepts_later_distinct_instance_of_same_class():
+    """A later argument that is a different, already-constructed instance must still load."""
+    src = m.OldStyleInit(7)
+    dst = m.OldStyleInit.__new__(m.OldStyleInit)
+    dst.__init__(src)
+    assert dst.data() == 70
+
+
 def test_old_style_init_does_not_authorize_later_self_alias():
     """A later typed argument that aliases a Python-typed `self` must not claim the old-style
     constructor's private storage and reach C++ before the object's lifetime has begun."""
@@ -347,6 +355,56 @@ def test_old_style_init_does_not_authorize_later_self_alias():
 
     # This is the decisive assertion: the callback's typed argument would refer to raw storage.
     assert entered == []
+    assert isinstance(exc_info.value, ValueError)
+    assert "still being constructed" in str(exc_info.value)
+
+    # Rejection must leave the object retryable.
+    obj.__init__(42)
+    assert obj.data() == 42
+
+
+def test_old_style_init_does_not_authorize_base_typed_later_alias():
+    """A later argument typed as a *base* of the class under construction shares the same value
+    slot, so it must not be able to claim the old-style constructor's storage: the reservation
+    would be sized from the base, and the constructor's own placement-new would overflow it."""
+    base_size, derived_size = m.alias_steal_sizes()
+    assert base_size < derived_size  # an undersized reservation is actually observable
+
+    m.alias_steal_reset()
+    obj = m.AliasStealDerived.__new__(m.AliasStealDerived)
+    entered = []
+
+    with pytest.raises((ValueError, RuntimeError)) as exc_info:
+        obj.__init__(obj, entered)
+
+    assert entered == []
+    assert isinstance(exc_info.value, ValueError)
+    assert "still being constructed" in str(exc_info.value)
+    # No storage was reserved at the base's (too small) size.
+    assert m.alias_steal_reservations() == 0
+
+    # Rejection must leave the object retryable.
+    obj.__init__(42)
+    assert obj.data() == 42
+
+
+def test_old_style_init_does_not_authorize_self_alias_inside_container():
+    """The still-unconstructed `self` reached through a container argument must be rejected too.
+
+    This is stricter than a bare reference argument: `stl.h`'s element caster copy-constructs the
+    value, so the read of uninitialized storage happens inside pybind11 rather than in the
+    callback, and no binding author can guard against it.
+    """
+    m.container_alias_reset()
+    obj = m.ContainerAliasItem.__new__(m.ContainerAliasItem)
+    entered = []
+
+    with pytest.raises((ValueError, RuntimeError)) as exc_info:
+        obj.__init__([obj], entered)
+
+    assert entered == []
+    # The decisive assertion: no copy constructor ran with its source over raw storage.
+    assert m.container_alias_copies() == 0
     assert isinstance(exc_info.value, ValueError)
     assert "still being constructed" in str(exc_info.value)
 

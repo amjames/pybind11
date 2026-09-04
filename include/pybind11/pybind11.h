@@ -501,8 +501,18 @@ private:
             = make_caster<conditional_t<std::is_void<Return>::value, void_type, Return>>;
 
         ArgsConverter args_converter;
-        if (!args_converter.load_args(call)) {
+        // Only an old-style constructor candidate has a frame that can hand out storage for a
+        // not-yet-constructed value; the loader needs to know which argument is `self`.
+        auto *old_style_init_frame = call.func.is_constructor
+                                         ? loader_life_support::current_old_style_init_frame()
+                                         : nullptr;
+        if (!args_converter.load_args(call, old_style_init_frame)) {
             return PYBIND11_TRY_NEXT_OVERLOAD;
+        }
+        if (old_style_init_frame != nullptr) {
+            // Argument loading is over: from here on, only the C++ callable itself may perform
+            // the one authorized `self` cast of a legacy `py::object`-self old-style constructor.
+            old_style_init_frame->finish_argument_loading();
         }
 
         /* Override policy for rvalues -- usually to enforce rvp::move on an rvalue */

@@ -81,6 +81,24 @@ private:
     void *old_style_init_storage = nullptr;
     bool old_style_init_self_claimed = false;
 
+    // Tracks what the frame is currently doing, so that only the old-style constructor's own
+    // `self` may reach still-unconstructed storage. The `self` of an old-style constructor is
+    // always the first positional argument; a later argument that merely aliases the same,
+    // still-unconstructed Python object must never be exposed as a C++ reference.
+    enum class load_phase : std::uint8_t {
+        before_arguments, // No argument load in progress yet.
+        self_argument,    // Loading positional argument 0, i.e. `self`.
+        later_argument,   // Loading positional argument 1 or later.
+        callable          // All arguments loaded; the C++ callable is running.
+    };
+    load_phase phase = load_phase::before_arguments;
+
+    bool old_style_init_self_load_authorized() const {
+        // Either the one `self` argument load, or a cast performed by the C++ callable itself
+        // (the legacy `py::object self` pattern, which casts inside the callback body).
+        return phase == load_phase::self_argument || phase == load_phase::callable;
+    }
+
     static bool is_same_value_and_holder(const value_and_holder &lhs,
                                          const value_and_holder &rhs) {
         return lhs.inst == rhs.inst && lhs.vh == rhs.vh;
@@ -167,6 +185,23 @@ public:
         }
     }
 
+    /// Returns the current frame only if it is an old-style constructor frame, i.e. only if
+    /// argument-load bookkeeping is needed at all. Returns nullptr for every other call.
+    static loader_life_support *current_old_style_init_frame() {
+        auto *frame = tls_current_frame();
+        return (frame != nullptr && frame->old_style_init_self != nullptr) ? frame : nullptr;
+    }
+
+    /// Called by `argument_loader` before loading positional argument `index`.
+    // NOLINTNEXTLINE(readability-make-member-function-const)
+    void begin_argument_load(std::size_t index) {
+        phase = (index == 0) ? load_phase::self_argument : load_phase::later_argument;
+    }
+
+    /// Called once all arguments loaded successfully, before the C++ callable is invoked.
+    // NOLINTNEXTLINE(readability-make-member-function-const)
+    void finish_argument_loading() { phase = load_phase::callable; }
+
     /// Claims and allocates the private storage for the one old-style constructor `self` load of
     /// the current frame; returns nullptr for every other load. `self` is loaded first, or cast
     /// inside a legacy `py::object` callback after all arguments were loaded. Nested bound calls
@@ -176,6 +211,7 @@ public:
         auto *frame = tls_current_frame();
         if (frame == nullptr || frame->old_style_init_self == nullptr
             || frame->old_style_init_self_claimed
+            || !frame->old_style_init_self_load_authorized()
             || !is_same_value_and_holder(v_h, *frame->old_style_init_self)
             || v_h.value_ptr() != nullptr) {
             return nullptr;

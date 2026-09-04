@@ -143,6 +143,51 @@ struct MixedStyleInit {
     int data() const { return m_data; }
 };
 
+// test_old_style_init_does_not_authorize_base_typed_later_alias
+// The value slot of a single-inheritance instance is shared by base and derived, so a later
+// argument typed as a base of the class under construction matches the same `value_and_holder`.
+// Reserving storage for it sizes the allocation from the *base*, which is smaller.
+struct AliasStealBase {
+    std::int32_t marker = 0;
+    virtual ~AliasStealBase() = default;
+    static std::size_t &reservations() {
+        static std::size_t n = 0;
+        return n;
+    }
+    static void *operator new(std::size_t n) {
+        if (n == sizeof(AliasStealBase)) {
+            ++reservations();
+        }
+        return ::operator new(n);
+    }
+    static void operator delete(void *p) { ::operator delete(p); }
+};
+
+struct AliasStealDerived : AliasStealBase {
+    std::int64_t payload[16];
+    explicit AliasStealDerived(int x) : payload{} { marker = x; }
+    int data() const { return marker; }
+};
+
+// test_old_style_init_does_not_authorize_self_alias_inside_container
+// Deliberately trivially destructible: on a build where the guard has regressed the element
+// caster copy-constructs from raw storage and the never-constructed value is then committed, so
+// the test must report an assertion failure rather than crash during teardown.
+struct ContainerAliasItem {
+    int value;
+    explicit ContainerAliasItem(int v) : value(v) {}
+    // Does not read `other`: the regression test must not itself perform the uninitialized
+    // read. That this runs at all proves the copy constructor was invoked with `other` bound to
+    // storage whose lifetime had not begun.
+    ContainerAliasItem(const ContainerAliasItem &) : value(-1) { ++copies_from_source(); }
+    ContainerAliasItem &operator=(const ContainerAliasItem &) = delete;
+    static std::size_t &copies_from_source() {
+        static std::size_t n = 0;
+        return n;
+    }
+    int data() const { return value; }
+};
+
 TEST_SUBMODULE(class_, m) {
     m.def("obj_class_name", [](py::handle obj) { return py::detail::obj_class_name(obj.ptr()); });
 
@@ -676,6 +721,28 @@ TEST_SUBMODULE(class_, m) {
                             return NewNoInit(t[0].cast<int>());
                         }));
 
+    py::class_<AliasStealBase>(m, "AliasStealBase");
+    py::class_<AliasStealDerived, AliasStealBase> alias_steal(m, "AliasStealDerived");
+    ignoreOldStyleInitWarnings([&alias_steal]() {
+        alias_steal
+            .def("__init__",
+                 [](AliasStealDerived &self, int x) {
+                     ::new (static_cast<void *>(&self)) AliasStealDerived(x);
+                 })
+            .def("__init__", [](const py::object &, const AliasStealBase &, py::list entered) {
+                // Reaching this callback means a base-typed later argument was exposed as a
+                // C++ reference over storage sized for the base, not the derived class.
+                // Do not inspect that reference: keep the test itself free of UB.
+                entered.append("entered");
+                throw std::runtime_error("base-typed later-alias callback entered");
+            });
+    });
+    alias_steal.def("data", &AliasStealDerived::data);
+    m.def("alias_steal_sizes",
+          []() { return py::make_tuple(sizeof(AliasStealBase), sizeof(AliasStealDerived)); });
+    m.def("alias_steal_reservations", []() { return AliasStealBase::reservations(); });
+    m.def("alias_steal_reset", []() { AliasStealBase::reservations() = 0; });
+
     py::class_<OldStyleInit> old_style_init(m, "OldStyleInit");
     ignoreOldStyleInitWarnings([&old_style_init]() {
         old_style_init
@@ -694,6 +761,11 @@ TEST_SUBMODULE(class_, m) {
                 int x = state.cast<int>();
                 new (&self) OldStyleInit(x);
             });
+        // A later argument that is a DIFFERENT, fully constructed instance of the same class
+        // must keep working: the guard only rejects loads of the still-unconstructed `self`.
+        old_style_init.def("__init__", [](OldStyleInit &self, const OldStyleInit &other) {
+            new (&self) OldStyleInit(other.data() * 10);
+        });
         old_style_init.def(
             "__init__", [](const py::object &, const OldStyleInit &, py::list entered) {
                 // Reaching this callback means that the later argument was exposed as a C++
@@ -704,6 +776,30 @@ TEST_SUBMODULE(class_, m) {
             });
     });
     old_style_init.def("data", &OldStyleInit::data).def("v_data", &OldStyleInit::v_data);
+
+    py::class_<ContainerAliasItem> container_alias(m, "ContainerAliasItem");
+    ignoreOldStyleInitWarnings([&container_alias]() {
+        container_alias
+            .def("__init__",
+                 [](ContainerAliasItem &self, int v) {
+                     ::new (static_cast<void *>(&self)) ContainerAliasItem(v);
+                 })
+            .def("__init__",
+                 [](const py::object &,
+                    const std::vector<ContainerAliasItem> &loaded,
+                    py::list entered) {
+                     // Reaching this callback means the element caster copy-constructed from
+                     // storage whose lifetime had not begun. Unlike a bare reference argument,
+                     // the binding author cannot avoid that read: it happens inside the
+                     // container caster itself.
+                     entered.append("entered");
+                     entered.append(py::int_(static_cast<int>(loaded.size())));
+                     throw std::runtime_error("container-alias constructor callback entered");
+                 });
+    });
+    container_alias.def("data", &ContainerAliasItem::data);
+    m.def("container_alias_copies", []() { return ContainerAliasItem::copies_from_source(); });
+    m.def("container_alias_reset", []() { ContainerAliasItem::copies_from_source() = 0; });
 
     py::class_<OldStyleInitCollision> old_style_init_collision(m, "OldStyleInitCollision");
     ignoreOldStyleInitWarnings([&old_style_init_collision]() {
