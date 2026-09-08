@@ -210,8 +210,7 @@ public:
     static void *try_reserve_old_style_init_storage(value_and_holder &v_h, const type_info *type) {
         auto *frame = tls_current_frame();
         if (frame == nullptr || frame->old_style_init_self == nullptr
-            || frame->old_style_init_self_claimed
-            || !frame->old_style_init_self_load_authorized()
+            || frame->old_style_init_self_claimed || !frame->old_style_init_self_load_authorized()
             || !is_same_value_and_holder(v_h, *frame->old_style_init_self)
             || v_h.value_ptr() != nullptr) {
             return nullptr;
