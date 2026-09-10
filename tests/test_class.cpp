@@ -164,8 +164,8 @@ struct AliasStealBase {
 };
 
 struct AliasStealDerived : AliasStealBase {
-    std::int64_t payload[16];
-    explicit AliasStealDerived(int x) : payload{} { marker = x; }
+    std::int64_t payload[16]{};
+    explicit AliasStealDerived(int x) { marker = x; }
     int data() const { return marker; }
 };
 
@@ -174,12 +174,12 @@ struct AliasStealDerived : AliasStealBase {
 // caster copy-constructs from raw storage and the never-constructed value is then committed, so
 // the test must report an assertion failure rather than crash during teardown.
 struct ContainerAliasItem {
-    int value;
+    int value{-1};
     explicit ContainerAliasItem(int v) : value(v) {}
     // Does not read `other`: the regression test must not itself perform the uninitialized
     // read. That this runs at all proves the copy constructor was invoked with `other` bound to
     // storage whose lifetime had not begun.
-    ContainerAliasItem(const ContainerAliasItem &) : value(-1) { ++copies_from_source(); }
+    ContainerAliasItem(const ContainerAliasItem &) { ++copies_from_source(); }
     ContainerAliasItem &operator=(const ContainerAliasItem &) = delete;
     static std::size_t &copies_from_source() {
         static std::size_t n = 0;
