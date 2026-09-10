@@ -464,9 +464,14 @@ def _check_legacy_v12_storage_collision():
         assert obj.data() == 43
         assert stats() == (3, 2, constructed + 1, constructed)
         del obj
-        gc.collect()
-        gc.collect()
-        assert stats() == (3, 3, constructed + 1, constructed + 1)
+        if not env.GRAALPY:  # Cannot reliably trigger GC.
+            # Only ordinary teardown of the live retry object is checked here. The rollback
+            # properties this test exists for are pinned by the assertions above, which run
+            # everywhere: no leaked collision storage, and no early or double destruction of
+            # the private value.
+            gc.collect()
+            gc.collect()
+            assert stats() == (3, 3, constructed + 1, constructed + 1)
 
     assert unraisable == []
 
