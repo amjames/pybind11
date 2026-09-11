@@ -2190,7 +2190,11 @@ private:
     // argument is being loaded: only argument 0 is the constructor's `self`.
     template <size_t I>
     bool load_one(loader_life_support *old_style_init_frame, function_call &call) {
-        if (old_style_init_frame != nullptr) {
+        // The phase only *changes* at argument 0 (`self_argument`) and argument 1
+        // (`later_argument`); from argument 2 on it is already `later_argument`. `I` is a
+        // template parameter, so `I < 2` folds at compile time and arguments 2 and beyond
+        // do not even test the pointer.
+        if (I < 2 && old_style_init_frame != nullptr) {
             old_style_init_frame->begin_argument_load(I);
         }
         return std::get<I>(argcasters).load(call.args[I], call.args_convert[I]);
