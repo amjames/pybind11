@@ -388,6 +388,69 @@ def test_old_style_init_does_not_authorize_base_typed_later_alias():
     assert obj.data() == 42
 
 
+def test_old_style_init_value_error_hides_later_overload():
+    """Documents a behavior change: rejecting an alias aborts overload resolution.
+
+    The construction guard reports rejection by throwing `value_error`. Only
+    `reference_cast_error` is translated into `PYBIND11_TRY_NEXT_OVERLOAD`, so the throw
+    escapes the whole overload loop and a later candidate that would have matched is never
+    reached. Before the guard existed, the first candidate's alias argument loaded
+    successfully, its *next* argument then failed to convert, and resolution moved on to the
+    second candidate, which constructed the object.
+
+    This is not a behavior introduced by the construction guard as such: casters on `master`
+    already throw `value_error` from load paths with the same non-fallthrough consequence.
+    The guard adds a new trigger for it. Pinning the current outcome here so that a
+    deliberate decision to make the guard fall through instead shows up as a test change.
+    """
+    obj = m.OverloadFallthrough.__new__(m.OverloadFallthrough)
+    entered = []
+
+    # Both candidates take two Python arguments, so the first is not skipped on arity: it is
+    # reached, and its argument 1 is the alias the guard rejects.
+    with pytest.raises(ValueError, match="still being constructed"):
+        obj.__init__(obj, entered)
+
+    # Neither candidate ran: the first was rejected by the guard before its callback (which
+    # would have raised RuntimeError("first candidate entered")), and the second - which
+    # matches this call and would have constructed the object - was never attempted.
+    assert entered == []
+
+    # The rejection still leaves the object retryable through the second candidate.
+    obj.__init__(None, entered)
+    assert entered == ["second candidate entered"]
+    assert obj.data() == 99
+
+
+def test_old_style_init_callable_phase_grant_is_not_self_specific():
+    """Documents a known limitation: inside the callable, the one-shot grant is not tied to
+    the `self` handle.
+
+    While the C++ callable runs, any load of the slot under construction may claim the
+    reservation, not only a cast of `self`. Narrowing the grant to "a cast of the `self`
+    object" would not close this: the claiming cast below targets `stash[0]`, which *is* the
+    same Python object as `self`, so the two are indistinguishable at cast time. Supporting
+    the legacy `py::object`-self pattern requires the permission to stay live for the whole
+    callable phase, and the callable body is user code.
+
+    The consequence is bounded. The grant is one-shot, so the genuine `self` cast then fails
+    and the constructor raises; nothing is published, and the object stays retryable. The
+    reference only reaches raw storage because the callback explicitly asked to cast it.
+    """
+    obj = m.CallablePhaseGrant.__new__(m.CallablePhaseGrant)
+    entered = []
+
+    with pytest.raises(ValueError, match="still being constructed"):
+        obj.__init__([obj], entered)
+
+    # The non-`self` cast consumed the reservation; the sanctioned one then found it spent.
+    assert entered == ["stash cast claimed the reservation"]
+
+    # No storage escaped and no state is stuck: the object still constructs normally.
+    obj.__init__(42)
+    assert obj.data() == 42
+
+
 def test_old_style_init_does_not_authorize_self_alias_inside_container():
     """The still-unconstructed `self` reached through a container argument must be rejected too.
 

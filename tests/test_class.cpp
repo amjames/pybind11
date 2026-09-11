@@ -169,6 +169,23 @@ struct AliasStealDerived : AliasStealBase {
     int data() const { return marker; }
 };
 
+// test_old_style_init_value_error_hides_later_overload
+// Two old-style candidates that both match a two-argument call. The first one's *later*
+// argument is the alias that the construction guard rejects; the second would construct
+// normally. Documents which of the two the dispatcher reaches today.
+struct OverloadFallthrough {
+    int m_data;
+    explicit OverloadFallthrough(int data) : m_data(data) {}
+    int data() const { return m_data; }
+};
+
+// test_old_style_init_callable_phase_grant_is_not_self_specific
+struct CallablePhaseGrant {
+    int m_data;
+    explicit CallablePhaseGrant(int data) : m_data(data) {}
+    int data() const { return m_data; }
+};
+
 // test_old_style_init_does_not_authorize_self_alias_inside_container
 // Deliberately trivially destructible: on a build where the guard has regressed the element
 // caster copy-constructs from raw storage and the never-constructed value is then committed, so
@@ -776,6 +793,58 @@ TEST_SUBMODULE(class_, m) {
             });
     });
     old_style_init.def("data", &OldStyleInit::data).def("v_data", &OldStyleInit::v_data);
+
+    py::class_<OverloadFallthrough> overload_fallthrough(m, "OverloadFallthrough");
+    ignoreOldStyleInitWarnings([&overload_fallthrough]() {
+        // First candidate. Its `self` is Python-typed, so argument 0 loads harmlessly; the
+        // alias that the construction guard rejects is argument 1, and the argument that
+        // would have rejected this candidate on its own (a py::int_ given a list) comes after
+        // it. Before the guard existed, the alias load succeeded, the py::int_ conversion then
+        // failed, and overload resolution moved on to the next candidate.
+        // Both candidates must take the same number of Python arguments, or the first is
+        // skipped on arity alone and the fall-through says nothing about the guard.
+        overload_fallthrough.def(
+            "__init__", [](const py::object &, const OverloadFallthrough &, py::int_) {
+                // Reaching this callback would mean the alias was exposed as a C++ reference
+                // before the object's lifetime began. Do not inspect it; the distinctive
+                // exception message is how the test detects that it ran.
+                throw std::runtime_error("first candidate entered");
+            });
+        // Second candidate. Matches the same call and constructs normally.
+        overload_fallthrough.def(
+            "__init__", [](OverloadFallthrough &self, const py::object &, py::list entered) {
+                entered.append("second candidate entered");
+                ::new (static_cast<void *>(&self)) OverloadFallthrough(99);
+            });
+    });
+    overload_fallthrough.def("data", &OverloadFallthrough::data);
+
+    py::class_<CallablePhaseGrant> callable_phase_grant(m, "CallablePhaseGrant");
+    ignoreOldStyleInitWarnings([&callable_phase_grant]() {
+        callable_phase_grant
+            .def("__init__",
+                 [](CallablePhaseGrant &self, int v) {
+                     ::new (static_cast<void *>(&self)) CallablePhaseGrant(v);
+                 })
+            .def("__init__", [](const py::object &self, py::list stash, py::list entered) {
+                // The callable-phase grant is keyed on the value slot, not on the `self`
+                // handle. `stash[0]` is the very same Python object as `self`, so this cast is
+                // indistinguishable from the sanctioned one and consumes the one-shot
+                // reservation. Do not inspect the reference it returns: it denotes storage
+                // whose lifetime has not begun.
+                try {
+                    stash[0].cast<CallablePhaseGrant &>();
+                    entered.append("stash cast claimed the reservation");
+                } catch (const std::exception &e) {
+                    entered.append(std::string("stash cast rejected: ") + e.what());
+                }
+                // The genuine `self` cast now finds the permission already spent.
+                auto &self_ref = self.cast<CallablePhaseGrant &>();
+                ::new (static_cast<void *>(&self_ref)) CallablePhaseGrant(7);
+                entered.append("self cast succeeded");
+            });
+    });
+    callable_phase_grant.def("data", &CallablePhaseGrant::data);
 
     py::class_<ContainerAliasItem> container_alias(m, "ContainerAliasItem");
     ignoreOldStyleInitWarnings([&container_alias]() {
