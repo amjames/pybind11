@@ -664,8 +664,10 @@ struct instance {
      * the [bb...] block (but not independently allocated).
      *
      * Status bits indicate whether the associated holder is constructed (&
-     * status_holder_constructed) and whether the value pointer is registered (&
-     * status_instance_registered) in `registered_instances`.
+     * status_holder_constructed), whether the value pointer is registered (&
+     * status_instance_registered) in `registered_instances`, and whether a constructor is
+     * currently constructing the C++ value in that slot (& status_value_constructing), during
+     * which the value pointer must not be treated as denoting a live C++ object.
      */
     bool simple_layout : 1;
     /// For simple layout, tracks whether the holder has been constructed
