@@ -803,13 +803,14 @@ TEST_SUBMODULE(class_, m) {
         // failed, and overload resolution moved on to the next candidate.
         // Both candidates must take the same number of Python arguments, or the first is
         // skipped on arity alone and the fall-through says nothing about the guard.
-        overload_fallthrough.def(
-            "__init__", [](const py::object &, const OverloadFallthrough &, py::int_) {
-                // Reaching this callback would mean the alias was exposed as a C++ reference
-                // before the object's lifetime began. Do not inspect it; the distinctive
-                // exception message is how the test detects that it ran.
-                throw std::runtime_error("first candidate entered");
-            });
+        overload_fallthrough.def("__init__",
+                                 [](const py::object &, const OverloadFallthrough &, py::int_) {
+                                     // Reaching this callback would mean the alias was exposed as
+                                     // a C++ reference before the object's lifetime began. Do not
+                                     // inspect it; the distinctive exception message is how the
+                                     // test detects that it ran.
+                                     throw std::runtime_error("first candidate entered");
+                                 });
         // Second candidate. Matches the same call and constructs normally.
         overload_fallthrough.def(
             "__init__", [](OverloadFallthrough &self, const py::object &, py::list entered) {
